@@ -1,0 +1,31 @@
+# Copy to terraform.tfvars and adjust.
+
+aws_region = "us-east-1"
+
+# true  = create the organization in this account (this account becomes the management account)
+# false = use an organization that already exists
+create_organization = true
+feature_set         = "ALL"
+enabled_policy_types = ["SERVICE_CONTROL_POLICY"]
+
+# Optional: trusted access for AWS services, e.g. ["cloudtrail.amazonaws.com", "config.amazonaws.com"]
+aws_service_access_principals = []
+
+# Create directly under the root (set parent_id to an existing OU/root ID to nest it)
+ou_name   = "Workloads"
+parent_id = null
+
+child_ous = [
+  { name = "Workloads-Prod", tags = { Environment = "prod" } },
+  { name = "Workloads-NonProd", tags = { Environment = "nonprod" } },
+]
+
+tags = {
+  Owner       = "platform-team"
+  CostCenter  = "1234"
+  Environment = "shared"
+}
+
+# Region guardrail
+attach_region_restriction_scp = true
+allowed_regions               = ["us-east-1", "ap-south-1"]

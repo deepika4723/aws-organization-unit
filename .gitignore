@@ -1,0 +1,29 @@
+# Terraform working directories and state
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+
+# Plan files may contain sensitive values
+*.tfplan
+tfplan
+
+# Real variable values (keep only the .example file in git)
+terraform.tfvars
+*.auto.tfvars
+*.auto.tfvars.json
+
+# Override files for local use
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Note: .terraform.lock.hcl is intentionally NOT ignored. Commit it so provider versions are pinned.
