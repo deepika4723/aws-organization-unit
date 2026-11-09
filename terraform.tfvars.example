@@ -27,5 +27,5 @@ tags = {
 }
 
 # Region guardrail
-attach_region_restriction_scp = true
+attach_region_restriction_scp = false
 allowed_regions               = ["us-east-1", "ap-south-1"]
