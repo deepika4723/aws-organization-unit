@@ -8,6 +8,8 @@ region-restriction Service Control Policy (SCP).
 | File | Purpose |
 | --- | --- |
 | `versions.tf` | Terraform and AWS provider version constraints |
+| `backend.tf` | Remote state backend (S3), values supplied at init |
+| `.github/workflows/terraform-ou.yml` | CI/CD: validate, plan on PR, apply on `main` |
 | `providers.tf` | AWS provider and default tags |
 | `variables.tf` | Input variables with validation |
 | `main.tf` | Organization lookup, OU(s), SCP and attachment |
@@ -33,12 +35,43 @@ region-restriction Service Control Policy (SCP).
 
 ```bash
 cp terraform.tfvars.example terraform.tfvars   # then edit
-terraform init
+terraform init \
+  -backend-config="bucket=<state-bucket>" \
+  -backend-config="key=ou/workloads.tfstate" \
+  -backend-config="region=us-east-1" \
+  -backend-config="use_lockfile=true"
 terraform plan -out=tfplan
 terraform apply tfplan
 ```
 
 Use the outputs in other modules, for example `ou_id` as the `parent_id` for account creation.
+
+## CI/CD
+
+The workflow `.github/workflows/terraform-ou.yml` runs as follows:
+
+- **Pull request to `main`:** `fmt -check`, `validate`, then `plan`. The plan appears in the job summary. Nothing is changed.
+- **Merge to `main`:** `validate`, then `apply` in the `production` environment. The apply job waits for approval.
+
+Authentication uses GitHub OIDC, so no long-lived AWS keys are stored.
+
+### One-time setup
+
+1. **State bucket.** Create an S3 bucket with versioning and default encryption enabled, and block public access. Locking uses S3 native locking (`use_lockfile`), so no DynamoDB table is needed. This requires Terraform `>= 1.10`.
+2. **Migrate state.** If the OU was already created from a local machine, copy the local state to the bucket with `terraform init -migrate-state` and the backend settings above. Otherwise, with `create_organization = true`, the next apply will try to create the organization again and fail.
+3. **OIDC provider.** In IAM, add the `token.actions.githubusercontent.com` identity provider (audience `sts.amazonaws.com`) to the management account.
+4. **Two roles** trusted by that provider, scoped to this repository:
+   - `terraform-ou-plan`: read-only Organizations and S3 state access. Trust `sub` = `repo:deepika4723/aws-organization-unit:pull_request`.
+   - `terraform-ou-apply`: the permissions listed under *Prerequisites*, plus state access. Trust `sub` = `repo:deepika4723/aws-organization-unit:environment:production`.
+5. **GitHub repository variables** (Settings > Secrets and variables > Actions > Variables): `AWS_REGION`, `TF_STATE_BUCKET`, `TF_STATE_KEY`, `AWS_PLAN_ROLE_ARN`, `AWS_APPLY_ROLE_ARN`.
+6. **GitHub secret** `TF_VARS`: the full contents of your `terraform.tfvars`. The file is git-ignored, so CI reads it from this secret.
+7. **Environment protection.** Settings > Environments > create `production` and add required reviewers. Without this, merges to `main` apply immediately.
+8. **Branch protection.** Require the `validate` and `plan` checks on `main`, and require pull requests.
+
+### Notes
+
+- The apply job re-runs `plan` after approval and applies that plan. Review the plan in the pull request before merging.
+- Pull requests from forks do not receive secrets, so their plans will fail. This is expected.
 
 ## Notes
 

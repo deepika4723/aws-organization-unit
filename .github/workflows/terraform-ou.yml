@@ -1,0 +1,151 @@
+name: terraform-ou
+
+# Flow:
+#   pull request -> fmt + validate + plan (plan is posted to the job summary)
+#   merge to main -> fmt + validate, then apply after approval on the
+#                    "production" environment
+#
+# Required GitHub configuration (see README, "CI/CD"):
+#   vars.AWS_REGION            e.g. us-east-1
+#   vars.TF_STATE_BUCKET       S3 bucket that stores Terraform state
+#   vars.TF_STATE_KEY          state object key, e.g. ou/workloads.tfstate
+#   vars.AWS_PLAN_ROLE_ARN     read-only OIDC role, used on pull requests
+#   vars.AWS_APPLY_ROLE_ARN    write OIDC role, used on main (environment: production)
+#   secrets.TF_VARS            full contents of terraform.tfvars
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "**.tf"
+      - "terraform.tfvars.example"
+      - ".github/workflows/terraform-ou.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**.tf"
+      - "terraform.tfvars.example"
+      - ".github/workflows/terraform-ou.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never run two applies against the same state at once.
+concurrency:
+  group: terraform-ou
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: "1.17.0"
+  AWS_REGION: ${{ vars.AWS_REGION }}
+
+jobs:
+  validate:
+    name: Format and validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Check formatting
+        run: terraform fmt -check -recursive
+
+      - name: Init without backend
+        run: terraform init -backend=false -input=false
+
+      - name: Validate
+        run: terraform validate
+
+  plan:
+    name: Plan
+    needs: validate
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          role-session-name: terraform-ou-plan
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Write tfvars
+        env:
+          TF_VARS: ${{ secrets.TF_VARS }}
+        run: printf '%s\n' "$TF_VARS" > terraform.tfvars
+
+      - name: Init with remote state
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ vars.TF_STATE_KEY }}" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="use_lockfile=true"
+
+      - name: Plan
+        run: terraform plan -input=false -no-color -lock=true -out=tfplan
+
+      - name: Publish plan to job summary
+        if: always()
+        run: |
+          {
+            echo "## Terraform plan"
+            echo '```hcl'
+            terraform show -no-color tfplan
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  apply:
+    name: Apply
+    needs: validate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Requires approval: configure required reviewers on the "production"
+    # environment in GitHub (Settings > Environments).
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          role-session-name: terraform-ou-apply
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Write tfvars
+        env:
+          TF_VARS: ${{ secrets.TF_VARS }}
+        run: printf '%s\n' "$TF_VARS" > terraform.tfvars
+
+      - name: Init with remote state
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ vars.TF_STATE_KEY }}" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="use_lockfile=true"
+
+      - name: Plan
+        run: terraform plan -input=false -no-color -out=tfplan
+
+      - name: Apply saved plan
+        run: terraform apply -input=false -auto-approve tfplan
